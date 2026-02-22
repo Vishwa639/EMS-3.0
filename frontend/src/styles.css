@@ -1,0 +1,7 @@
+.event-hero {
+  width: 100%;
+  height: 260px;
+  border-radius: 16px;
+  margin-bottom: 2rem;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+}
