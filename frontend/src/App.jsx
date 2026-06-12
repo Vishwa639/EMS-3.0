@@ -10,6 +10,8 @@ import OrganizerDashboard from "./pages/OrganizerDashboard";
 import ProtectedRoute from "./components/ProtectedRoute";
 import CreateEvent from "./pages/CreateEvent";
 import EditEvent from "./pages/EditEvent";
+import Settings from "./pages/Settings";
+import Attendance from "./pages/Attendance";
 
 function App() {
   return (
@@ -52,6 +54,13 @@ function App() {
               <EditEvent />
             </ProtectedRoute>
           }
+        />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/organizer/create" element={<CreateEvent />} />
+        <Route path="/organizer/events/:id/edit" element={<CreateEvent />} />
+        <Route
+          path="/organizer/events/:id/attendance"
+          element={<Attendance />}
         />
       </Routes>
     </BrowserRouter>

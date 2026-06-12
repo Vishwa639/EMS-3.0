@@ -14,6 +14,8 @@ const Razorpay = require("razorpay");
 const PDFDocument = require("pdfkit");
 require("dotenv").config();
 
+console.log("BASE_URL =", process.env.BASE_URL);
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -38,7 +40,7 @@ const upload = multer({
     filename: (_, file, cb) =>
       cb(null, Date.now() + path.extname(file.originalname)),
   }),
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
 });
 
 /* ================= AUTH MIDDLEWARE ================= */
@@ -139,6 +141,34 @@ app.get("/api/events/:id", (req, res) => {
   );
 });
 
+app.get("/api/events/:id/registrations", (req, res) => {
+  const eventId = req.params.id;
+
+  db.query(
+    `
+    SELECT 
+      r.id,
+      r.student_name,
+      r.register_no,
+      r.department,
+      r.verified AS present
+    FROM event_registrations r
+    WHERE r.event_id = ?
+    ORDER BY r.student_name
+    `,
+    [eventId],
+    (err, rows) => {
+      if (err) {
+        console.error(err);
+        return res
+          .status(500)
+          .json({ message: "Failed to fetch registrations" });
+      }
+      res.json(rows);
+    },
+  );
+});
+
 /* ================= CREATE EVENT (WITH CERT TEMPLATE) ================= */
 app.post(
   "/api/events",
@@ -178,8 +208,8 @@ app.post(
     db.query(
       `INSERT INTO events
      (name,event_date,start_time,end_time,venue,description,
- max_seats,organizer_id,thumbnail,registration_fee,certificate_template,certificate_layout)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+ max_seats,organizer_id,thumbnail,registration_fee)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
       [
         name,
         eventDate,
@@ -191,8 +221,6 @@ app.post(
         req.user.id,
         thumbnail,
         registrationFee,
-        certificateTemplate,
-        JSON.stringify(defaultCertificateLayout),
       ],
       (err) => {
         if (err) return res.status(500).json({ message: "Create failed" });
@@ -208,10 +236,23 @@ app.get("/api/organizer/events", auth, (req, res) => {
     return res.status(403).json({ message: "Forbidden" });
 
   db.query(
-    "SELECT * FROM events WHERE organizer_id=? ORDER BY event_date DESC",
+    `
+    SELECT 
+      e.*,
+      COUNT(r.id) AS booked_seats
+    FROM events e
+    LEFT JOIN event_registrations r
+      ON e.id = r.event_id
+    WHERE e.organizer_id = ?
+    GROUP BY e.id
+    ORDER BY e.event_date DESC
+    `,
     [req.user.id],
     (err, rows) => {
-      if (err) return res.status(500).json({ message: "Fetch failed" });
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ message: "Fetch failed" });
+      }
       res.json(rows);
     },
   );
@@ -284,7 +325,7 @@ app.put(
           venue=?, description=?, max_seats=?, registration_fee=?
     `;
 
-    if (req.files?.thumbnail) {
+    if (req.files && req.files.thumbnail && req.files.thumbnail.length > 0) {
       sql += `, thumbnail=?`;
       fields.push(`/uploads/${req.files.thumbnail[0].filename}`);
     }
@@ -303,6 +344,77 @@ app.put(
     });
   },
 );
+
+app.put("/api/events/:id/attendance", auth, (req, res) => {
+  if (req.user.role !== "organizer")
+    return res.status(403).json({ message: "Forbidden" });
+
+  const updates = req.body;
+  // example:
+  // [{ id:1, present:1 }, { id:2, present:0 }]
+
+  const queries = updates.map(
+    (r) =>
+      new Promise((resolve, reject) => {
+        db.query(
+          "UPDATE event_registrations SET verified=? WHERE id=?",
+          [r.present ? 1 : 0, r.id],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          },
+        );
+      }),
+  );
+
+  Promise.all(queries)
+    .then(() => res.json({ message: "Attendance saved" }))
+    .catch(() =>
+      res.status(500).json({ message: "Failed to save attendance" }),
+    );
+});
+
+app.get("/api/events/:id/attendance/export", auth, (req, res) => {
+  if (req.user.role !== "organizer")
+    return res.status(403).json({ message: "Forbidden" });
+
+  const eventId = req.params.id;
+
+  db.query(
+    `
+    SELECT 
+      r.student_name,
+      r.register_no,
+      r.department,
+      r.verified
+    FROM event_registrations r
+    WHERE r.event_id = ?
+    ORDER BY r.student_name
+    `,
+    [eventId],
+    (err, rows) => {
+      if (err) {
+        console.error(err);
+        return res.status(500).json({ message: "Export failed" });
+      }
+
+      let csv = "Student Name,Register No,Department,Present\n";
+
+      rows.forEach((r) => {
+        const present = r.verified ? "Yes" : "No";
+        csv += `"${r.student_name}","${r.register_no}","${r.department}","${present}"\n`;
+      });
+
+      res.setHeader("Content-Type", "text/csv");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="attendance_event_${eventId}.csv"`,
+      );
+
+      res.send(csv);
+    },
+  );
+});
 
 /* ================= STUDENT ================= */
 app.get("/api/student/registrations", auth, (req, res) => {
@@ -364,141 +476,91 @@ app.get("/api/certificate/:regCode", (req, res) => {
 
       doc.pipe(res);
 
-      // ===== PAGE CONSTANTS =====
-const PAGE_WIDTH = 595;
-const PAGE_HEIGHT = 842;
+      const PAGE_WIDTH = 595;
+      const PAGE_HEIGHT = 842;
 
-// ===== OUTER BORDER =====
-doc
-  .lineWidth(3)
-  .rect(30, 30, PAGE_WIDTH - 60, PAGE_HEIGHT - 60)
-  .stroke("#1f2937");
+      /* Background */
+      doc.rect(0, 0, PAGE_WIDTH, PAGE_HEIGHT).fill("#f8fafc");
 
-// ===== INNER BORDER =====
-doc
-  .lineWidth(1)
-  .rect(45, 45, PAGE_WIDTH - 90, PAGE_HEIGHT - 90)
-  .stroke("#9ca3af");
-
-// ===== HEADER =====
-doc
-  .font("Times-Bold")
-  .fontSize(26)
-  .fillColor("#111827")
-  .text("CERTIFICATE OF PARTICIPATION", 0, 120, {
-    align: "center",
-  });
-
-// ===== SUBTITLE =====
-doc
-  .font("Times-Roman")
-  .fontSize(14)
-  .fillColor("#374151")
-  .text("This is to certify that", 0, 180, {
-    align: "center",
-  });
-
-// ===== STUDENT NAME =====
-doc
-  .font("Times-Bold")
-  .fontSize(32)
-  .fillColor("#000000")
-  .text(student_name.toUpperCase(), 0, 230, {
-    align: "center",
-  });
-
-// ===== DIVIDER LINE =====
-doc
-  .moveTo(150, 280)
-  .lineTo(PAGE_WIDTH - 150, 280)
-  .stroke("#6b7280");
-
-// ===== EVENT TEXT =====
-doc
-  .font("Times-Roman")
-  .fontSize(16)
-  .fillColor("#374151")
-  .text(
-    `has successfully participated in the event`,
-    0,
-    320,
-    { align: "center" }
-  );
-
-// ===== EVENT NAME =====
-doc
-  .font("Times-Bold")
-  .fontSize(20)
-  .fillColor("#111827")
-  .text(`"${event_name}"`, 0, 360, {
-    align: "center",
-  });
-
-// ===== FOOTER =====
-doc
-  .fontSize(12)
-  .fillColor("#6b7280")
-  .text(
-    "This certificate is system generated and does not require a signature.",
-    0,
-    720,
-    { align: "center" }
-  );
-
-// ===== CERTIFICATE ID =====
-doc
-  .fontSize(10)
-  .fillColor("#9ca3af")
-  .text(`Certificate ID: ${regCode}`, 50, 780);
-
-      /* === FIXED INDUSTRIAL TEMPLATE === */
-      const templatePath = rows[0].certificate_template
-        ? path.join(__dirname, rows[0].certificate_template)
-        : path.join(__dirname, "assets", "certificate_template.png");
-
-      if (fs.existsSync(templatePath)) {
-        //doc.image(templatePath, 0, 0, { width: 595, height: 842 });
-      }
-
-      /* === TEXT OVERLAY (PRECISE POSITIONING) === */
-
-      // Student Name (Primary Focus)
+      /* Outer border */
       doc
-        .font("Helvetica-Bold")
-        .fontSize(layout.studentName.size)
-        .text(student_name, layout.studentName.x, layout.studentName.y, {
-          align: layout.studentName.align,
-        });
+        .lineWidth(3)
+        .rect(30, 30, PAGE_WIDTH - 60, PAGE_HEIGHT - 60)
+        .stroke("#000000");
 
+      /* Inner border */
       doc
-        .font("Helvetica")
-        .fontSize(layout.eventName.size)
-        .text(
-          `For participating in "${event_name}"`,
-          layout.eventName.x,
-          layout.eventName.y,
-          { align: layout.eventName.align },
-        );
+        .lineWidth(1)
+        .rect(45, 45, PAGE_WIDTH - 90, PAGE_HEIGHT - 90)
+        .stroke("#57595f");
 
-      // Event Name
+      /* Title */
       doc
-        .font("Helvetica")
-        .fontSize(18)
-        .fillColor("#374151")
-        .text(`For participating in "${event_name}"`, 0, 485, {
+        .font("Times-Bold")
+        .fontSize(28)
+        .fillColor("#1e3a8a")
+        .text("CERTIFICATE OF PARTICIPATION", 0, 120, {
           align: "center",
         });
 
-      // Footer Line
+      /* Subtitle */
+      doc
+        .font("Times-Roman")
+        .fontSize(14)
+        .fillColor("#475569")
+        .text("This is to certify that", 0, 180, {
+          align: "center",
+        });
+
+      /* Student name */
+      doc
+        .font("Times-Bold")
+        .fontSize(34)
+        .fillColor("#0f172a")
+        .text(student_name.toUpperCase(), 0, 230, {
+          align: "center",
+        });
+
+      /* Divider line */
+      doc
+        .moveTo(150, 280)
+        .lineTo(PAGE_WIDTH - 150, 280)
+        .stroke("#57595f");
+
+      /* Participation text */
+      doc
+        .font("Times-Roman")
+        .fontSize(16)
+        .fillColor("#334155")
+        .text(`has successfully participated in the event`, 0, 320, {
+          align: "center",
+        });
+
+      /* Event name */
+      doc
+        .font("Times-Bold")
+        .fontSize(20)
+        .fillColor("#1e3a8a")
+        .text(`"${event_name}"`, 0, 360, {
+          align: "center",
+        });
+
+      /* Footer */
       doc
         .fontSize(12)
-        .fillColor("#6B7280")
+        .fillColor("#64748b")
         .text(
           "This certificate is system generated and does not require a signature.",
           0,
-          760,
+          720,
           { align: "center" },
         );
+
+      /* Certificate ID */
+      doc
+        .fontSize(10)
+        .fillColor("#94a3b8")
+        .text(`Certificate ID: ${regCode}`, 50, 780);
 
       doc.end();
     },
@@ -607,9 +669,12 @@ app.post(
             razorpay_payment_id,
           ],
           async () => {
-            const qr = await QRCode.toDataURL(
-              `${process.env.BASE_URL}/api/verify/${regCode}`,
-            );
+            const verifyUrl = `${process.env.BASE_URL}/api/verify/${regCode}`;
+
+            console.log("QR URL:", verifyUrl);
+
+            const qr = await QRCode.toDataURL(verifyUrl);
+
             res.json({ qrDataUrl: qr });
           },
         );

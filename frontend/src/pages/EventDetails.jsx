@@ -7,6 +7,7 @@ import Card from "../components/ui/Card";
 import { getUser } from "../services/auth";
 import RegistrationModal from "../components/RegistrationModal";
 import "../styles.css";
+import toast from "react-hot-toast";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL;
 
@@ -36,46 +37,66 @@ export default function EventDetails() {
     setProcessing(true);
 
     try {
-      // FREE EVENT
-      if (event.registration_fee <= 0) {
-        await api.post(`/api/events/${event.id}/verify-payment-and-register`, {
-          razorpay_signature: "FREE",
-          ...regForm,
-        });
+      // ✅ STEP 1: Check already registered
+      const regs = await api.get("/api/student/registrations");
 
-        setShowModal(false);
-        navigate("/student");
+      const already = regs.data.find((r) => r.event_name === event.name);
+
+      if (already) {
+        toast.error("You already registered for this event");
+        setProcessing(false);
         return;
       }
 
-      // PAID EVENT
-      const orderRes = await api.post(
-        `/api/events/${event.id}/create-payment-order`,
-      );
+      // ✅ HANDLE FREE EVENT FIRST
+      if (event.registration_fee <= 0) {
+        await api.post(`/api/events/${id}/verify-payment-and-register`, {
+          razorpay_payment_id: "FREE",
+          razorpay_order_id: "FREE",
+          razorpay_signature: "FREE",
 
+          studentName: regForm.studentName,
+          registerNo: regForm.registerNo,
+          department: regForm.department,
+        });
+
+        toast.success("Registered successfully!");
+        setShowModal(false);
+        return; // 🚨 VERY IMPORTANT
+      }
+      // ✅ STEP 2: Create order
+      const orderRes = await api.post(`/api/events/${id}/create-payment-order`);
+
+      const { orderId, amount, currency } = orderRes.data;
+
+      // ✅ STEP 3: Razorpay
       const options = {
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-        amount: orderRes.data.amount,
-        currency: orderRes.data.currency,
-        order_id: orderRes.data.orderId,
-        handler: async function (response) {
-          await api.post(
-            `/api/events/${event.id}/verify-payment-and-register`,
-            {
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_signature: response.razorpay_signature,
-              ...regForm,
-            },
-          );
+        key: import.meta.env.VITE_RAZORPAY_KEY,
+        amount,
+        currency,
+        order_id: orderId,
 
+        handler: async function (response) {
+          await api.post(`/api/events/${id}/verify-payment-and-register`, {
+            razorpay_payment_id: response.razorpay_payment_id,
+            razorpay_order_id: response.razorpay_order_id,
+            razorpay_signature: response.razorpay_signature,
+
+            studentName: regForm.studentName,
+            registerNo: regForm.registerNo,
+            department: regForm.department,
+          });
+
+          toast.success("Registration successful!");
           setShowModal(false);
-          navigate("/student");
         },
       };
 
       const rzp = new window.Razorpay(options);
       rzp.open();
+    } catch (err) {
+      console.error(err);
+      toast.error(err?.response?.data?.message || "Payment failed");
     } finally {
       setProcessing(false);
     }
@@ -105,6 +126,26 @@ export default function EventDetails() {
     ? Math.min((bookedSeats / maxSeats) * 100, 100)
     : 0;
 
+  const formatDate = (date) =>
+    new Date(date).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+
+  const formatTime = (time) =>
+    new Date(`1970-01-01T${time}`).toLocaleTimeString("en-IN", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    });
+
+  const isPastEvent = new Date(event.event_date) < new Date();
+
+  console.log("API_BASE =", API_BASE);
+console.log("thumbnail =", event.thumbnail);
+console.log("full url =", `${API_BASE}${event.thumbnail}`);
+
   return (
     <section className="py-12 bg-slate-50">
       <Container>
@@ -113,7 +154,8 @@ export default function EventDetails() {
           <h1 className="text-3xl font-bold">{event.name}</h1>
 
           <p className="mt-2 text-slate-600">
-            {event.event_date} · {event.start_time} – {event.end_time}
+            {formatDate(event.event_date)} • {formatTime(event.start_time)} –{" "}
+            {formatTime(event.end_time)}{" "}
           </p>
 
           <p className="text-slate-600">{event.venue}</p>
@@ -182,8 +224,13 @@ export default function EventDetails() {
               </div>
               <Button
                 className="mt-6 w-full"
-                disabled={event.booked_seats >= event.max_seats}
+                disabled={event.booked_seats >= event.max_seats || isPastEvent}
                 onClick={() => {
+                  if (isPastEvent) {
+                    toast.error("Registration closed. Event already ended.");
+                    return;
+                  }
+
                   const user = getUser();
 
                   if (!user) {
@@ -192,7 +239,7 @@ export default function EventDetails() {
                   }
 
                   if (user.role !== "student") {
-                    alert("Only students can register for events");
+                    toast.error("Only students can register for events");
                     return;
                   }
 
@@ -201,8 +248,10 @@ export default function EventDetails() {
               >
                 {event.booked_seats >= event.max_seats
                   ? "Event Full"
-                  : "Register Now"}
-              </Button>{" "}
+                  : isPastEvent
+                    ? "Event Ended"
+                    : "Register Now"}
+              </Button>
             </div>
           </Card>
         </div>

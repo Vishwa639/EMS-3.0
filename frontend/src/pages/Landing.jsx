@@ -17,6 +17,7 @@ export default function Landing() {
   const navigate = useNavigate();
   const images = [e1, e2, e3, e4];
   const [index, setIndex] = useState(0);
+  const user = getUser();
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -52,26 +53,14 @@ export default function Landing() {
                 <Link to="/events">
                   <Button>Explore Events</Button>
                 </Link>{" "}
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    const user = getUser();
-
-                    if (!user) {
-                      navigate("/login");
-                      return;
-                    }
-
-                    if (user.role !== "organizer") {
-                      alert("Only organizers can create events");
-                      return;
-                    }
-
-                    navigate("/organizer/create");
-                  }}
-                >
-                  Create Event
-                </Button>{" "}
+                {user?.role === "organizer" && (
+                  <Button
+                    variant="outline"
+                    onClick={() => navigate("/organizer/create")}
+                  >
+                    Create Event
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -135,7 +124,8 @@ export default function Landing() {
                     </h3>
 
                     <p className="text-sm text-slate-600 mt-1">
-                      {event.event_date} · {event.venue}
+                      {new Date(event.event_date).toLocaleDateString()} ·{" "}
+                      {event.venue}{" "}
                     </p>
 
                     <div className="mt-4 flex items-center justify-between">
