@@ -111,7 +111,7 @@ export default function Landing() {
                   <div className="h-40 bg-slate-200 rounded-t-xl overflow-hidden">
                     {event.thumbnail && (
                       <img
-                        src={`http://localhost:5001${event.thumbnail}`}
+                        src={`https://ems-backend-3oew.onrender.com${event.thumbnail}`}
                         alt={event.name}
                         className="h-full w-full object-cover"
                       />

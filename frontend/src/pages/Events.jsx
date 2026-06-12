@@ -122,7 +122,7 @@ export default function Events() {
                 <div className="h-44 bg-slate-200 overflow-hidden rounded-t-xl">
                   {event.thumbnail && (
                     <img
-                      src={`http://localhost:5001${event.thumbnail}`}
+                      src={`https://ems-backend-3oew.onrender.com${event.thumbnail}`}
                       alt={event.name}
                       className="h-full w-full object-cover"
                     />
