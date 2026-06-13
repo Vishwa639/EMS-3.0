@@ -9,7 +9,7 @@ import RegistrationModal from "../components/RegistrationModal";
 import "../styles.css";
 import toast from "react-hot-toast";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = import.meta.env.VITE_API_URL;
 
 export default function EventDetails() {
   const { id } = useParams();

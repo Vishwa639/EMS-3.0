@@ -5,7 +5,7 @@ import Card from "../components/ui/Card";
 import Button from "../components/ui/Button";
 import QrModal from "../components/QrModal";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL;
+const API_BASE = import.meta.env.VITE_API_URL;
 
 export default function StudentDashboard() {
   const [registrations, setRegistrations] = useState([]);
